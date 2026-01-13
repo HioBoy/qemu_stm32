@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false # 一个系统编译失败不影响另一个
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-20.04, windows-latest] # 匹配官方推荐的Ubuntu 20.04
 
     steps:
       # 步骤1：拉取代码到构建环境（禁用子模块拉取）
@@ -28,44 +28,49 @@ jobs:
           submodules: false # 完全禁用子模块拉取
           fetch-depth: 0    # 拉取完整提交历史
 
-      # 步骤2：安装Linux依赖（仅Linux系统执行）
-      - name: Install dependencies (Linux)
-        if: matrix.os == 'ubuntu-latest'
+      # 步骤2：安装Linux依赖（严格匹配官方README的Ubuntu 20.04依赖）
+      - name: Install dependencies (Ubuntu 20.04)
+        if: matrix.os == 'ubuntu-20.04'
         run: |
           sudo apt update
-          # QEMU编译依赖
+          # 官方README指定的核心依赖
           sudo apt install -y \
+            build-essential \
+            python \
+            zlib1g-dev \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            libtool \
+            libfdt-dev \
+            # 补充编译必需的工具（官方未列但实际需要）
             gcc-arm-none-eabi \
             g++ \
             make \
             pkg-config \
-            libglib2.0-dev \
-            libpixman-1-dev \
-            zlib1g-dev \
-            libsdl2-dev \
             autoconf \
             automake \
-            libtool \
-            python3 \
-            python3-pip
+            python3
           # 校验依赖安装
-          gcc-arm-none-eabi --version
+          gcc --version
           make --version
 
-      # 步骤3：安装Windows依赖（仅Windows系统执行）
+      # 步骤3：安装Windows依赖（适配STM32编译需求）
       - name: Install dependencies (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           # 直接使用环境自带的Chocolatey，无需重复安装
           choco upgrade chocolatey -y --no-progress
           
-          # 安装编译依赖（修正语法：移除多余续行符，确保包名正确）
+          # 安装编译依赖（匹配Linux依赖的Windows等价包）
           choco install -y --no-progress `
             make `
             gcc-arm-none-eabi `
             msys2 `
             sdl2 `
-            pkgconfiglite
+            pkgconfiglite `
+            python `
+            zlib `
+            glib
           
           # 配置环境变量（优先添加msys2和工具链路径）
           $env:PATH += ";C:\msys64\usr\bin;C:\msys64\mingw64\bin"
@@ -82,7 +87,7 @@ jobs:
           bash --version
         shell: powershell
 
-      # 步骤4：配置并编译QEMU_STM32（修复Windows路径错误）
+      # 步骤4：配置并编译QEMU_STM32（严格遵循官方README的编译命令）
       - name: Configure and build qemu_stm32
         run: |
           # 修复Windows路径转义问题，使用原生环境变量GITHUB_WORKSPACE
@@ -95,30 +100,41 @@ jobs:
             exit 1
           fi
           
-          # 进入工作目录（兼容Windows/Linux）
+          # 进入源码根目录（兼容Windows/Linux）
           cd "$WORKSPACE_DIR" || exit 1
           
-          # 创建构建目录（兼容Windows/Linux）
-          mkdir -p build && cd build || exit 1
-          
-          # 配置（不同系统适配）
-          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
-            ../configure --target-list=arm-softmmu --enable-stm32 --disable-werror
+          # 执行官方推荐的configure命令：--enable-debug --disable-xen --disable-werror --target-list="arm-softmmu"
+          if [[ "${{ matrix.os }}" == "ubuntu-20.04" ]]; then
+            ./configure \
+              --enable-debug \
+              --disable-xen \
+              --disable-werror \
+              --target-list="arm-softmmu"
           else
-            # Windows下使用msys2的bash执行configure，指定完整路径
-            bash -c "$GITHUB_WORKSPACE/configure --target-list=arm-softmmu --enable-stm32 --disable-werror"
+            # Windows下使用msys2的bash执行configure，匹配官方参数
+            bash -c "$GITHUB_WORKSPACE/configure --enable-debug --disable-xen --disable-werror --target-list='arm-softmmu'"
           fi
           
-          # 编译（多线程加速，Windows默认4线程）
+          # 官方推荐的make命令（多线程加速）
           make -j$(nproc || echo 4)
         shell: bash
 
-      # 步骤5：上传编译产物（方便下载使用）
+      # 步骤5：可选-运行单元测试（匹配官方README的测试命令）
+      - name: Run unit tests (Linux only)
+        if: matrix.os == 'ubuntu-20.04' # Windows暂不支持QEMU单元测试
+        run: |
+          cd "$GITHUB_WORKSPACE" || exit 1
+          # 官方README指定的单元测试命令
+          make check
+          make check-qtest-arm
+        shell: bash
+
+      # 步骤6：上传编译产物（适配根目录编译的产物路径）
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: qemu_stm32-${{ matrix.os }}
           path: |
-            ${{ github.workspace }}/build/arm-softmmu/qemu-system-arm*
-            ${{ github.workspace }}/build/*.log
+            ${{ github.workspace }}/arm-softmmu/qemu-system-arm*  # 官方指定的可执行文件路径
+            ${{ github.workspace }}/*.log                       # 编译/测试日志
           retention-days: 7 # 产物保留7天
