@@ -1,0 +1,79 @@
+# 工作流名称
+name: Cross-Platform Build (Windows & Linux)
+
+# 触发条件：push到main分支、pull request到main分支、手动触发
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: # 手动触发
+
+# 定义作业：同时在Windows和Linux上运行
+jobs:
+  build:
+    # 运行的操作系统
+    runs-on: ${{ matrix.os }}
+    # 矩阵配置：指定要编译的系统
+    strategy:
+      fail-fast: false # 一个系统编译失败不影响另一个
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      # 步骤1：拉取代码到构建环境
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive # 拉取子模块（qemu项目通常包含子模块）
+
+      # 步骤2：安装Linux依赖（仅Linux系统执行）
+      - name: Install dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt update
+          # QEMU编译依赖
+          sudo apt install -y \
+            gcc-arm-none-eabi \
+            g++ \
+            make \
+            pkg-config \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            zlib1g-dev \
+            libsdl2-dev \
+            autoconf \
+            automake \
+            libtool \
+            python3 \
+            python3-pip
+
+      # 步骤3：安装Windows依赖（仅Windows系统执行）
+      - name: Install dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          # 安装Chocolatey包管理器（Windows）
+          Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          # 安装编译依赖
+          choco install -y \
+            make \
+            gcc-arm-none-eabi \
+            msys2 \
+            sdl2 \
+            pkgconfiglite
+          # 配置环境变量
+          echo "C:\msys64\mingw64\bin" >> $GITHUB_PATH
+          echo "C:\Program Files (x86)\GNU Arm Embedded Toolchain\10 2021.10\bin" >> $GITHUB_PATH
+
+      # 步骤4：配置并编译QEMU_STM32
+      - name: Configure and build qemu_stm32
+        run: |
+          # 创建构建目录
+          mkdir -p build && cd build
+          # 配置（不同系统适配）
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            ../configure --target-list=arm-softmmu --enable-stm32 --disable-werror
+          else
+            # Windows下使用msys2的bash执行configure
+            bash -c "../configure --target-list=arm-softmmu --enable-stm32 --disable-werror"
+          fi
