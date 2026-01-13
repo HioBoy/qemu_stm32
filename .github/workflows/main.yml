@@ -48,24 +48,38 @@ jobs:
             libtool \
             python3 \
             python3-pip
+          # 校验依赖安装
+          gcc-arm-none-eabi --version
+          make --version
 
       # 步骤3：安装Windows依赖（仅Windows系统执行）
       - name: Install dependencies (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          # 安装Chocolatey包管理器（Windows）
-          Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          # 安装编译依赖
-          choco install -y \
-            make \
-            gcc-arm-none-eabi \
-            msys2 \
-            sdl2 \
+          # 直接使用环境自带的Chocolatey，无需重复安装
+          choco upgrade chocolatey -y --no-progress
+          
+          # 安装编译依赖（修正语法：移除多余续行符，确保包名正确）
+          choco install -y --no-progress `
+            make `
+            gcc-arm-none-eabi `
+            msys2 `
+            sdl2 `
             pkgconfiglite
-          # 配置环境变量（修复msys2路径）
-          echo "C:\msys64\usr\bin" >> $GITHUB_PATH
-          echo "C:\msys64\mingw64\bin" >> $GITHUB_PATH
-          echo "C:\Program Files (x86)\GNU Arm Embedded Toolchain\10 2021.10\bin" >> $GITHUB_PATH
+          
+          # 配置环境变量（优先添加msys2和工具链路径）
+          $env:PATH += ";C:\msys64\usr\bin;C:\msys64\mingw64\bin"
+          $env:PATH += ";C:\Program Files (x86)\GNU Arm Embedded Toolchain\10 2021.10\bin"
+          
+          # 写入GitHub环境变量（全局生效）
+          echo "C:\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "C:\Program Files (x86)\GNU Arm Embedded Toolchain\10 2021.10\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          
+          # 校验依赖安装（确保工具可识别）
+          gcc-arm-none-eabi --version
+          make --version
+          bash --version
         shell: powershell
 
       # 步骤4：配置并编译QEMU_STM32（修复Windows路径错误）
