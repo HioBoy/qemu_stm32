@@ -28,24 +28,75 @@ jobs:
           submodules: false # 先禁用自动拉取，后续手动修复后再拉取
           fetch-depth: 0    # 拉取完整提交历史，避免子模块关联失败
 
-      # 步骤2：修复QEMU子模块地址（核心解决git.qemu-project.org连接拒绝）
+      # 步骤2：修复QEMU子模块地址（核心解决git.qemu-project.org连接拒绝+Windows路径问题）
       - name: Fix QEMU submodule URL (with retry)
         run: |
-          cd ${{ github.workspace }}
-          # 初始化.gitmodules（如果不存在则创建）
-          if [ ! -f .gitmodules ]; then
-            echo "[submodule \"qemu\"]" > .gitmodules
-            echo "	path = qemu" >> .gitmodules
-            echo "	url = https://github.com/qemu/qemu.git" >> .gitmodules
-          else
-            # 替换现有子模块地址为GitHub镜像
-            git config --file .gitmodules submodule.qemu.url https://github.com/qemu/qemu.git
+          # 修复Windows路径转义问题，使用原生环境变量GITHUB_WORKSPACE
+          WORKSPACE_DIR="$GITHUB_WORKSPACE"
+          echo "Current workspace: $WORKSPACE_DIR"
+          
+          # 检查路径是否存在
+          if [ ! -d "$WORKSPACE_DIR" ]; then
+            echo "Error: Workspace directory $WORKSPACE_DIR does not exist!"
+            exit 1
           fi
-          # 同步子模块配置
-          git submodule sync
-          # 重试3次拉取子模块（每次间隔5秒）
+          
+          # 进入工作目录（兼容Windows/Linux）
+          cd "$WORKSPACE_DIR" || exit 1
+          
+          # 批量替换所有子模块地址（覆盖所有git.qemu-project.org和anongit.freedesktop.org）
+          if [ -f .gitmodules ]; then
+            # 替换 git.qemu-project.org 为 GitHub 镜像
+            sed -i 's|git://git.qemu-project.org/\(.*\)|https://github.com/qemu/\1|g' .gitmodules
+            # 替换 anongit.freedesktop.org/pixman 为 GitHub 镜像
+            sed -i 's|git://anongit.freedesktop.org/pixman|https://github.com/freedesktop/pixman.git|g' .gitmodules
+            # 移除末尾多余的 /（部分原地址有尾斜杠）
+            sed -i 's|.git/$|.git|g' .gitmodules
+          else
+            # 如果没有.gitmodules，创建基础版本（包含所有子模块）
+            cat > .gitmodules << EOF
+[submodule "roms/vgabios"]
+	path = roms/vgabios
+	url = https://github.com/qemu/vgabios.git
+[submodule "roms/seabios"]
+	path = roms/seabios
+	url = https://github.com/qemu/seabios.git
+[submodule "roms/SLOF"]
+	path = roms/SLOF
+	url = https://github.com/qemu/SLOF.git
+[submodule "roms/ipxe"]
+	path = roms/ipxe
+	url = https://github.com/qemu/ipxe.git
+[submodule "roms/openbios"]
+	path = roms/openbios
+	url = https://github.com/qemu/openbios.git
+[submodule "roms/openhackware"]
+	path = roms/openhackware
+	url = https://github.com/qemu/openhackware.git
+[submodule "roms/qemu-palcode"]
+	path = roms/qemu-palcode
+	url = https://github.com/rth7680/qemu-palcode.git
+[submodule "roms/sgabios"]
+	path = roms/sgabios
+	url = https://github.com/qemu/sgabios.git
+[submodule "pixman"]
+	path = pixman
+	url = https://github.com/freedesktop/pixman.git
+[submodule "dtc"]
+	path = dtc
+	url = https://github.com/qemu/dtc.git
+[submodule "roms/u-boot"]
+	path = roms/u-boot
+	url = https://github.com/qemu/u-boot.git
+EOF
+          fi
+          
+          # 同步子模块配置（递归处理所有嵌套子模块）
+          git submodule sync --recursive
+          
+          # 重试3次拉取所有子模块（每次间隔5秒）
           for i in {1..3}; do
-            echo "=== Attempt $i to pull qemu submodule ==="
+            echo "=== Attempt $i to pull all submodules ==="
             git submodule update --init --recursive --force && break
             echo "Attempt $i failed, retrying in 5s..."
             sleep 5
@@ -86,23 +137,29 @@ jobs:
             msys2 \
             sdl2 \
             pkgconfiglite
-          # 配置环境变量
+          # 配置环境变量（修复msys2路径）
+          echo "C:\msys64\usr\bin" >> $GITHUB_PATH
           echo "C:\msys64\mingw64\bin" >> $GITHUB_PATH
           echo "C:\Program Files (x86)\GNU Arm Embedded Toolchain\10 2021.10\bin" >> $GITHUB_PATH
         shell: powershell
 
-      # 步骤5：配置并编译QEMU_STM32
+      # 步骤5：配置并编译QEMU_STM32（修复Windows路径）
       - name: Configure and build qemu_stm32
         run: |
-          # 创建构建目录
-          mkdir -p build && cd build
+          # 再次使用GITHUB_WORKSPACE确保路径正确
+          cd "$GITHUB_WORKSPACE" || exit 1
+          
+          # 创建构建目录（兼容Windows/Linux）
+          mkdir -p build && cd build || exit 1
+          
           # 配置（不同系统适配）
           if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
             ../configure --target-list=arm-softmmu --enable-stm32 --disable-werror
           else
-            # Windows下使用msys2的bash执行configure
-            bash -c "../configure --target-list=arm-softmmu --enable-stm32 --disable-werror"
+            # Windows下使用msys2的bash执行configure，指定完整路径
+            bash -c "$GITHUB_WORKSPACE/configure --target-list=arm-softmmu --enable-stm32 --disable-werror"
           fi
+          
           # 编译（多线程加速，Windows默认4线程）
           make -j$(nproc || echo 4)
         shell: bash
@@ -113,6 +170,6 @@ jobs:
         with:
           name: qemu_stm32-${{ matrix.os }}
           path: |
-            build/arm-softmmu/qemu-system-arm* # 编译出的可执行文件
-            build/*.log # 编译日志（便于排查错误）
+            ${{ github.workspace }}/build/arm-softmmu/qemu-system-arm*
+            ${{ github.workspace }}/build/*.log
           retention-days: 7 # 产物保留7天
