@@ -21,13 +21,38 @@ jobs:
         os: [ubuntu-latest, windows-latest]
 
     steps:
-      # 步骤1：拉取代码到构建环境
+      # 步骤1：拉取代码到构建环境（先尝试拉取子模块）
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          submodules: recursive # 拉取子模块（qemu项目通常包含子模块）
+          submodules: false # 先禁用自动拉取，后续手动修复后再拉取
+          fetch-depth: 0    # 拉取完整提交历史，避免子模块关联失败
 
-      # 步骤2：安装Linux依赖（仅Linux系统执行）
+      # 步骤2：修复QEMU子模块地址（核心解决git.qemu-project.org连接拒绝）
+      - name: Fix QEMU submodule URL (with retry)
+        run: |
+          cd ${{ github.workspace }}
+          # 初始化.gitmodules（如果不存在则创建）
+          if [ ! -f .gitmodules ]; then
+            echo "[submodule \"qemu\"]" > .gitmodules
+            echo "	path = qemu" >> .gitmodules
+            echo "	url = https://github.com/qemu/qemu.git" >> .gitmodules
+          else
+            # 替换现有子模块地址为GitHub镜像
+            git config --file .gitmodules submodule.qemu.url https://github.com/qemu/qemu.git
+          fi
+          # 同步子模块配置
+          git submodule sync
+          # 重试3次拉取子模块（每次间隔5秒）
+          for i in {1..3}; do
+            echo "=== Attempt $i to pull qemu submodule ==="
+            git submodule update --init --recursive --force && break
+            echo "Attempt $i failed, retrying in 5s..."
+            sleep 5
+          done
+        shell: bash # 强制使用bash，兼容Windows/Linux
+
+      # 步骤3：安装Linux依赖（仅Linux系统执行）
       - name: Install dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -48,7 +73,7 @@ jobs:
             python3 \
             python3-pip
 
-      # 步骤3：安装Windows依赖（仅Windows系统执行）
+      # 步骤4：安装Windows依赖（仅Windows系统执行）
       - name: Install dependencies (Windows)
         if: matrix.os == 'windows-latest'
         run: |
@@ -64,8 +89,9 @@ jobs:
           # 配置环境变量
           echo "C:\msys64\mingw64\bin" >> $GITHUB_PATH
           echo "C:\Program Files (x86)\GNU Arm Embedded Toolchain\10 2021.10\bin" >> $GITHUB_PATH
+        shell: powershell
 
-      # 步骤4：配置并编译QEMU_STM32
+      # 步骤5：配置并编译QEMU_STM32
       - name: Configure and build qemu_stm32
         run: |
           # 创建构建目录
@@ -77,3 +103,16 @@ jobs:
             # Windows下使用msys2的bash执行configure
             bash -c "../configure --target-list=arm-softmmu --enable-stm32 --disable-werror"
           fi
+          # 编译（多线程加速，Windows默认4线程）
+          make -j$(nproc || echo 4)
+        shell: bash
+
+      # 步骤6：上传编译产物（方便下载使用）
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu_stm32-${{ matrix.os }}
+          path: |
+            build/arm-softmmu/qemu-system-arm* # 编译出的可执行文件
+            build/*.log # 编译日志（便于排查错误）
+          retention-days: 7 # 产物保留7天
