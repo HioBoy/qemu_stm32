@@ -1,0 +1,121 @@
+# Windows (msys2) 编译 QEMU_STM32
+name: Build QEMU_STM32 (Windows)
+
+# 仅手动触发（避免自动失败，便于调试）
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      # 步骤1：拉取代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+
+      # 步骤2：配置msys2官方源 + 安装基础依赖
+      - name: Setup msys2 environment
+        run: |
+          # 确保msys2安装
+          if (-not (Test-Path "C:\msys64")) {
+            choco install msys2 -y --no-progress --params "/InstallDir:C:\msys64"
+          }
+
+          # 恢复msys2官方源（避免清华镜像404）
+          $msysOfficial = @"
+          Server = https://repo.msys2.org/msys/$arch
+          Server = https://sourceforge.net/projects/msys2/files/REPOS/MSYS2/$arch
+          "@
+          $mingw64Official = @"
+          Server = https://repo.msys2.org/mingw/x86_64
+          Server = https://sourceforge.net/projects/msys2/files/REPOS/MINGW/x86_64
+          "@
+          New-Item -Path "C:\msys64\etc\pacman.d" -ItemType Directory -Force
+          Set-Content -Path "C:\msys64\etc\pacman.d\mirrorlist.msys" -Value $msysOfficial -Force
+          Set-Content -Path "C:\msys64\etc\pacman.d\mirrorlist.mingw64" -Value $mingw64Official -Force
+
+          # 升级msys2 + 安装核心依赖
+          C:\msys64\usr\bin\bash -lc "pacman -Syu --noconfirm --disable-download-timeout || true"
+          C:\msys64\usr\bin\bash -lc "pacman -Su --noconfirm --disable-download-timeout || true"
+          C:\msys64\usr\bin\bash -lc @"
+            pacman -S --noconfirm --disable-download-timeout \
+              base-devel \
+              mingw-w64-x86_64-gcc \
+              mingw-w64-x86_64-glib2 \
+              mingw-w64-x86_64-pixman \
+              mingw-w64-x86_64-zlib \
+              mingw-w64-x86_64-SDL2 \
+              make \
+              pkg-config \
+              autoconf \
+              automake \
+              libtool \
+              python3
+          "@
+        shell: powershell
+        continue-on-error: true # 允许个别非核心包失败
+
+      # 步骤3：手动安装gcc-arm-none-eabi（ARM官方源）
+      - name: Install ARM cross compiler
+        run: |
+          # ARM官方Azure镜像（稳定下载）
+          $toolchainUrl = "https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu-arm/10.3-2021.10/binrel/gcc-arm-none-eabi-10.3-2021.10-win32.zip"
+          $toolchainZip = "$env:TEMP/gcc-arm-none-eabi.zip"
+          $toolchainDir = "C:\msys64\mingw64\opt\gcc-arm-none-eabi"
+
+          # 3次重试下载
+          $success = $false
+          for ($i=1; $i -le 3; $i++) {
+            try {
+              Write-Host "Download attempt $i..."
+              Invoke-WebRequest -Uri $toolchainUrl -OutFile $toolchainZip -UseBasicParsing -TimeoutSec 120
+              $success = $true
+              break
+            } catch {
+              Write-Host "Attempt $i failed: $_"
+              Start-Sleep -Seconds 10
+            }
+          }
+          if (-not $success) {
+            throw "Failed to download gcc-arm-none-eabi"
+          }
+
+          # 解压 + 配置环境变量
+          Expand-Archive -Path $toolchainZip -DestinationPath $toolchainDir -Force
+          $env:PATH += ";$toolchainDir\gcc-arm-none-eabi-10.3-2021.10-win32\bin;C:\msys64\mingw64\bin;C:\msys64\usr\bin"
+          echo "$toolchainDir\gcc-arm-none-eabi-10.3-2021.10-win32\bin" >> $env:GITHUB_PATH
+          echo "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
+          echo "C:\msys64\usr\bin" >> $env:GITHUB_PATH
+        shell: powershell
+
+      # 步骤4：在msys2中编译QEMU_STM32
+      - name: Build in msys2
+        run: |
+          # 切换到msys2 bash执行编译
+          C:\msys64\usr\bin\bash -lc @"
+            cd "$(cygpath -u $GITHUB_WORKSPACE)" || exit 1
+            # 官方编译参数（适配msys2）
+            ./configure \
+              --enable-debug \
+              --disable-xen \
+              --disable-werror \
+              --target-list="arm-softmmu" \
+              --prefix=/usr/local
+            # 4线程编译（适配Windows资源）
+            make -j4
+          "@
+        shell: cmd
+
+      # 步骤5：上传Windows编译产物
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu_stm32-windows-msys2
+          path: |
+            ${{ github.workspace }}/arm-softmmu/qemu-system-arm*.exe
+            ${{ github.workspace }}/arm-softmmu/qemu-system-arm*.pdb
+            ${{ github.workspace }}/*.log
+          retention-days: 7
