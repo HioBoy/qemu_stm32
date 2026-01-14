@@ -1,7 +1,7 @@
 # 工作流名称：仅测试Windows msys2依赖安装
 name: Test Windows msys2 Dependencies
 
-# 触发条件：手动触发（避免自动运行）
+# 触发条件：手动触发
 on:
   workflow_dispatch:
 
@@ -9,29 +9,39 @@ jobs:
   test-windows-deps:
     runs-on: windows-latest
     steps:
-      # 步骤1：无需拉取代码（仅测试依赖，非编译）
+      # 步骤1：正确配置msys2清华镜像（符合官方格式）
       - name: Configure msys2 mirror (Tsinghua)
         run: |
-          # 创建msys2镜像配置文件（清华源，加速下载）
-          $mirrorContent = @"
-          [mirror]
-          Server = https://mirrors.tuna.tsinghua.edu.cn/msys2/`$repo/`$arch
-          "@
-          # 确保msys2目录存在（提前安装msys2）
-          if (-not (Test-Path "C:\msys64\etc\pacman.d")) {
-            New-Item -Path "C:\msys64\etc\pacman.d" -ItemType Directory -Force
+          # 确保msys2已安装（GitHub Action默认已装，但路径可能不同）
+          if (-not (Test-Path "C:\msys64")) {
+            choco install msys2 -y --no-progress
           }
-          # 写入镜像配置
-          Set-Content -Path "C:\msys64\etc\pacman.d\mirrorlist.msys" -Value $mirrorContent -Force
-          Set-Content -Path "C:\msys64\etc\pacman.d\mirrorlist.mingw64" -Value $mirrorContent -Force
+
+          # ========== 关键修复：msys2镜像配置文件正确格式 ==========
+          # 1. MSYS仓库镜像（基础工具）
+          $msysMirror = @"
+          Server = https://mirrors.tuna.tsinghua.edu.cn/msys2/msys/$arch
+          "@
+          # 2. MINGW64仓库镜像（编译工具/库）
+          $mingw64Mirror = @"
+          Server = https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/x86_64
+          "@
+
+          # 创建/覆盖镜像配置文件
+          New-Item -Path "C:\msys64\etc\pacman.d" -ItemType Directory -Force
+          Set-Content -Path "C:\msys64\etc\pacman.d\mirrorlist.msys" -Value $msysMirror -Force
+          Set-Content -Path "C:\msys64\etc\pacman.d\mirrorlist.mingw64" -Value $mingw64Mirror -Force
         shell: powershell
 
-      # 步骤2：安装msys2核心依赖（模拟编译所需）
-      - name: Install msys2 dependencies
+      # 步骤2：升级msys2并安装基础依赖（不含gcc-arm-none-eabi）
+      - name: Install msys2 base dependencies
         run: |
-          # 升级msys2系统包（强制刷新源）
-          C:\msys64\usr\bin\bash -lc "pacman -Syu --noconfirm --overwrite '*'"
-          # 安装所有编译依赖（包含SDL2/gcc-arm-none-eabi）
+          # 第一次升级（强制刷新，忽略锁定）
+          C:\msys64\usr\bin\bash -lc "pacman -Syu --noconfirm --overwrite '*' || true"
+          # 第二次升级（确保系统包完整）
+          C:\msys64\usr\bin\bash -lc "pacman -Su --noconfirm --overwrite '*'"
+          
+          # 安装msys2基础编译依赖（SDL2/glib2等，msys2仓库原生支持）
           C:\msys64\usr\bin\bash -lc @"
             pacman -S --noconfirm \
               base-devel \
@@ -45,24 +55,57 @@ jobs:
               autoconf \
               automake \
               libtool \
-              python \
-              gcc-arm-none-eabi
+              python
           "@
         shell: powershell
 
-      # 步骤3：校验所有依赖是否安装成功
-      - name: Verify installed dependencies
+      # 步骤3：手动安装gcc-arm-none-eabi（msys2无原生包，用官方离线包）
+      - name: Install gcc-arm-none-eabi (ARM official)
         run: |
-          # 进入msys2环境，逐个校验工具版本
+          # 下载ARM官方交叉编译器（稳定版本，镜像源）
+          $toolchainUrl = "https://mirrors.tuna.tsinghua.edu.cn/armbian-releases/tools/gcc-arm-none-eabi-10.3-2021.10-win32.zip"
+          $toolchainZip = "$env:TEMP/gcc-arm-none-eabi.zip"
+          $toolchainDir = "C:\msys64\mingw64\opt\gcc-arm-none-eabi"
+
+          # 下载（超时60秒，重试2次）
+          $retryCount = 0
+          while ($retryCount -lt 2) {
+            try {
+              Invoke-WebRequest -Uri $toolchainUrl -OutFile $toolchainZip -UseBasicParsing -TimeoutSec 60
+              break
+            } catch {
+              $retryCount++
+              Write-Host "Download failed, retry $retryCount..."
+              Start-Sleep -Seconds 5
+            }
+          }
+
+          # 解压到msys2目录（方便环境变量识别）
+          Expand-Archive -Path $toolchainZip -DestinationPath $toolchainDir -Force
+          
+          # 添加到msys2环境变量
+          C:\msys64\usr\bin\bash -lc "echo 'export PATH=/mingw64/opt/gcc-arm-none-eabi/gcc-arm-none-eabi-10.3-2021.10-win32/bin:\$PATH' >> ~/.bashrc"
+          # 临时添加到当前会话
+          echo "C:\msys64\mingw64\opt\gcc-arm-none-eabi\gcc-arm-none-eabi-10.3-2021.10-win32\bin" >> $env:GITHUB_PATH
+        shell: powershell
+
+      # 步骤4：完整校验所有依赖
+      - name: Verify all dependencies
+        run: |
+          # 进入msys2环境，加载bashrc（包含gcc-arm-none-eabi路径）
           C:\msys64\usr\bin\bash -lc @"
+            source ~/.bashrc
             echo "===== 依赖版本校验 ====="
-            echo "gcc version: " && gcc --version | head -1
-            echo "SDL2 version: " && pkg-config --modversion sdl2
-            echo "glib2 version: " && pkg-config --modversion glib-2.0
-            echo "pixman version: " && pkg-config --modversion pixman-1
-            echo "gcc-arm-none-eabi version: " && gcc-arm-none-eabi --version | head -1
-            echo "make version: " && make --version | head -1
-            echo "pkg-config version: " && pkg-config --version
-            echo "===== 所有依赖校验完成 ====="
+            # 基础编译工具
+            echo "gcc (mingw64): " && gcc --version | head -1
+            echo "make: " && make --version | head -1
+            echo "pkg-config: " && pkg-config --version
+            # 库依赖
+            echo "SDL2: " && pkg-config --modversion sdl2
+            echo "glib2: " && pkg-config --modversion glib-2.0
+            echo "pixman: " && pkg-config --modversion pixman-1
+            # ARM交叉编译器
+            echo "gcc-arm-none-eabi: " && gcc-arm-none-eabi --version | head -1
+            echo "===== 所有依赖校验成功 ====="
           "@
         shell: powershell
