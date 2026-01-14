@@ -1,0 +1,79 @@
+# Linux (Ubuntu 20.04) 编译 QEMU_STM32
+name: Build QEMU_STM32 (Linux)
+
+# 触发条件：手动触发 + 代码提交到stm32/main分支
+on:
+  push:
+    branches: [ main, stm32 ]
+    paths-ignore: # 仅代码变更时触发，忽略Windows配置文件
+      - '.github/workflows/build-windows.yml'
+  pull_request:
+    branches: [ main, stm32 ]
+    paths-ignore:
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch: # 手动触发
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-20.04
+    steps:
+      # 步骤1：拉取代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+
+      # 步骤2：安装官方指定依赖
+      - name: Install dependencies (Ubuntu 20.04)
+        run: |
+          sudo apt update
+          # 严格匹配项目官方README依赖
+          sudo apt install -y \
+            build-essential \
+            python \
+            zlib1g-dev \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            libtool \
+            libfdt-dev \
+            gcc-arm-none-eabi \
+            g++ \
+            make \
+            pkg-config \
+            autoconf \
+            automake \
+            python3
+          # 校验依赖
+          gcc --version
+          make --version
+          gcc-arm-none-eabi --version
+
+      # 步骤3：执行官方编译命令
+      - name: Configure and build
+        run: |
+          cd "$GITHUB_WORKSPACE" || exit 1
+          # 官方参数：--enable-debug --disable-xen --disable-werror --target-list="arm-softmmu"
+          ./configure \
+            --enable-debug \
+            --disable-xen \
+            --disable-werror \
+            --target-list="arm-softmmu"
+          make -j$(nproc)
+
+      # 步骤4：运行单元测试（官方推荐）
+      - name: Run unit tests
+        run: |
+          cd "$GITHUB_WORKSPACE" || exit 1
+          make check
+          make check-qtest-arm
+
+      # 步骤5：上传编译产物
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu_stm32-linux-ubuntu20.04
+          path: |
+            ${{ github.workspace }}/arm-softmmu/qemu-system-arm*
+            ${{ github.workspace }}/*.log
+          retention-days: 7
