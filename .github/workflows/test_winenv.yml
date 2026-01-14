@@ -1,0 +1,68 @@
+# 工作流名称：仅测试Windows msys2依赖安装
+name: Test Windows msys2 Dependencies
+
+# 触发条件：手动触发（避免自动运行）
+on:
+  workflow_dispatch:
+
+jobs:
+  test-windows-deps:
+    runs-on: windows-latest
+    steps:
+      # 步骤1：无需拉取代码（仅测试依赖，非编译）
+      - name: Configure msys2 mirror (Tsinghua)
+        run: |
+          # 创建msys2镜像配置文件（清华源，加速下载）
+          $mirrorContent = @"
+          [mirror]
+          Server = https://mirrors.tuna.tsinghua.edu.cn/msys2/`$repo/`$arch
+          "@
+          # 确保msys2目录存在（提前安装msys2）
+          if (-not (Test-Path "C:\msys64\etc\pacman.d")) {
+            New-Item -Path "C:\msys64\etc\pacman.d" -ItemType Directory -Force
+          }
+          # 写入镜像配置
+          Set-Content -Path "C:\msys64\etc\pacman.d\mirrorlist.msys" -Value $mirrorContent -Force
+          Set-Content -Path "C:\msys64\etc\pacman.d\mirrorlist.mingw64" -Value $mirrorContent -Force
+        shell: powershell
+
+      # 步骤2：安装msys2核心依赖（模拟编译所需）
+      - name: Install msys2 dependencies
+        run: |
+          # 升级msys2系统包（强制刷新源）
+          C:\msys64\usr\bin\bash -lc "pacman -Syu --noconfirm --overwrite '*'"
+          # 安装所有编译依赖（包含SDL2/gcc-arm-none-eabi）
+          C:\msys64\usr\bin\bash -lc @"
+            pacman -S --noconfirm \
+              base-devel \
+              mingw-w64-x86_64-gcc \
+              mingw-w64-x86_64-glib2 \
+              mingw-w64-x86_64-pixman \
+              mingw-w64-x86_64-zlib \
+              mingw-w64-x86_64-SDL2 \
+              make \
+              pkg-config \
+              autoconf \
+              automake \
+              libtool \
+              python \
+              gcc-arm-none-eabi
+          "@
+        shell: powershell
+
+      # 步骤3：校验所有依赖是否安装成功
+      - name: Verify installed dependencies
+        run: |
+          # 进入msys2环境，逐个校验工具版本
+          C:\msys64\usr\bin\bash -lc @"
+            echo "===== 依赖版本校验 ====="
+            echo "gcc version: " && gcc --version | head -1
+            echo "SDL2 version: " && pkg-config --modversion sdl2
+            echo "glib2 version: " && pkg-config --modversion glib-2.0
+            echo "pixman version: " && pkg-config --modversion pixman-1
+            echo "gcc-arm-none-eabi version: " && gcc-arm-none-eabi --version | head -1
+            echo "make version: " && make --version | head -1
+            echo "pkg-config version: " && pkg-config --version
+            echo "===== 所有依赖校验完成 ====="
+          "@
+        shell: powershell
